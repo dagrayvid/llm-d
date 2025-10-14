@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-internode-script
+data:
+  run-test-internode.sh: |
+    #!/bin/bash
+    set -e
+
+    cd /code/deepep/tests
+
+    ulimit -l unlimited
+
+    source /data/vllm_env_${HOSTNAME}.sh
+    export WORLD_SIZE=2
+    export RANK=${LWS_WORKER_INDEX}
+    export MASTER_PORT=8361
+    
+    python test_internode.py --test-ll-compatibility --num-processes 8 --num-experts 128
+    
+

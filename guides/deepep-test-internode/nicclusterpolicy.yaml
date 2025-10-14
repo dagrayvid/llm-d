@@ -1,0 +1,85 @@
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  creationTimestamp: "2025-09-26T20:52:17Z"
+  generation: 2
+  name: nic-cluster-policy
+  resourceVersion: "295266735"
+  uid: 5ec71963-8999-43d9-9173-8b9b6284e3bf
+spec:
+  ofedDriver:
+    env:
+    - name: UNLOAD_STORAGE_MODULES
+      value: "true"
+    forcePrecompiled: false
+    image: doca-driver
+    imagePullSecrets: []
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 30
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    repository: nvcr.io/nvidia/mellanox
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 20
+    terminationGracePeriodSeconds: 300
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: true
+        enable: true
+        force: true
+        podSelector: ""
+        timeoutSeconds: 300
+      maxParallelUpgrades: 1
+      safeLoad: false
+    version: 25.04-0.6.1.0-2
+  rdmaSharedDevicePlugin:
+    config: |
+      {
+        "configList": [
+          {
+            "resourcePrefix": "nvidia.com",
+            "resourceName": "roce",
+            "rdmaHcaMax": 63,
+            "selectors": {
+              "vendors": ["15b3"]
+            }
+          }
+        ]
+      }
+    image: k8s-rdma-shared-dev-plugin
+    imagePullSecrets: []
+    repository: ghcr.io/mellanox
+    version: sha256:1eb5ab7f4b6f0cf89c954cf7ac8eb2e6fb2290a4f5f57417136a5302f20b12c8
+status:
+  appliedStates:
+  - name: state-multus-cni
+    state: ignore
+  - name: state-container-networking-plugins
+    state: ignore
+  - name: state-ipoib-cni
+    state: ignore
+  - name: state-whereabouts-cni
+    state: ignore
+  - name: state-OFED
+    state: ready
+  - name: state-SRIOV-device-plugin
+    state: ignore
+  - name: state-RDMA-device-plugin
+    state: ready
+  - name: state-ib-kubernetes
+    state: ignore
+  - name: state-nv-ipam-cni
+    state: ignore
+  - name: state-nic-feature-discovery
+    state: ignore
+  - name: state-doca-telemetry-service
+    state: ignore
+  - name: state-nic-configuration-operator
+    state: ignore
+  - name: state-spectrum-x-operator
+    state: ignore
+  state: ready

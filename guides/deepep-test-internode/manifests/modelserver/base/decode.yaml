@@ -1,0 +1,254 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: wide-ep-llm-d-decode
+  labels:
+    llm-d.ai/inferenceServing: "true"
+    llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
+    llm-d.ai/role: decode
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      metadata:
+        labels:
+          llm-d.ai/inferenceServing: "true"
+          llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
+          llm-d.ai/role: decode
+        annotations:
+          k8s.v1.cni.cncf.io/networks: '[ { "name": "dhcp-network-port-1", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-2", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-3", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-4", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-5", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-6", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-7", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-8", "namespace": "llm-d-wide-ep" }              ]'
+            #k8s.v1.cni.cncf.io/networks: '[ { "name": "dhcp-network-port-1", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-2", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-3", "namespace": "llm-d-wide-ep" },                { "name": "dhcp-network-port-4", "namespace": "llm-d-wide-ep" } ]'               
+      spec:
+        #serviceAccountName: deepseek-r1
+        initContainers:
+          - name: routing-proxy
+            args:
+              - --port=8000
+              - --vllm-port=8200
+              - --connector=nixlv2
+              - -v=5
+              - --secure-proxy=false
+            image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0
+            imagePullPolicy: Always
+            ports:
+              - containerPort: 8000
+            resources: {}
+            restartPolicy: Always
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+        volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 32Gi
+          - name: hf-cache
+            persistentVolumeClaim:
+              claimName: model-pvc
+                #          - hostPath:
+                #              path: /run/nvidia/driver/dev/gdrdrv
+                #              type: CharDevice
+                #            name: gdrdrv
+          - name: podinfo
+            downwardAPI:
+              items:
+                - path: "annotations"
+                  fieldRef:
+                    fieldPath: metadata.annotations
+          - name: rdma-discovery-script
+            configMap:
+              name: roce-hca-discovery-script
+              defaultMode: 0755
+          - name: test-internode-script
+            configMap:
+              name: test-internode-script
+              defaultMode: 0755
+        containers:
+        - name: vllm-worker
+          #image: ghcr.io/llm-d/llm-d-dev:pr-245@sha256:06ba310cd557b7762c391ac11fe0bf20307851769bcf42973608ddcc3b4b47cf
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-a4ce93a # PR 255 merge commit
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-c29a23f # CUDA 12.9.1
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-d58731d # trivvy
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-47acf5b # PR 230
+          ### RC'S
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-291@sha256:8aae57dc3fe157fed864fd174951e2ecf2a0652315ff5729463bf1ffdc0dc796
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-291@sha256:cc15e6538d654e83ccddea19c665735549bc9fe915b020a2145b5d713bb637cc
+          #image: ghcr.io/llm-d/llm-d-gke-dev:pr-320@sha256:4e6e2ddfacd469c8e030a8d4ab58357d467cf1e852a9c0c128cf4b74136691a1
+          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-341@sha256:a4571f16a7d6e72975940c734c8262dc24a4c017af7645a24caff7df59763f6d
+          image: ghcr.io/llm-d/llm-d-cuda:v0.3.0
+          securityContext:
+            #privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            capabilities:
+              add:
+              - "IPC_LOCK"
+              - "SYS_RAWIO"
+              - "SYS_RESOURCE"
+              - "NET_RAW"
+          imagePullPolicy: Always
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - |-
+              #################
+              # RUN vLLM prefill worker
+              #################
+              ulimit -l unlimited
+              
+              sleep 20
+
+              DISCOVERY_CMD="/scripts/discover.sh"
+              if [[ -n "$REQUESTED_NICS" ]]; then
+                DISCOVERY_CMD+=" -i $REQUESTED_NICS"
+              fi
+              
+              $DISCOVERY_CMD
+              source /data/vllm_env_${HOSTNAME}.sh
+
+              KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${LOCAL_PRIMARY_IP}\"}"
+              START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+
+              env
+
+              export DEEPEP_REPO="https://github.com/deepseek-ai/DeepEP"
+              #export DEEPEP_VERSION="v1.2.1"
+                            
+              git clone "${DEEPEP_REPO}" deepep && \
+              cd deepep && \
+              git checkout c939644ce0b44426a98f77adaa55ea4c632ea043
+
+              bash /test-script/run-test-internode.sh
+
+              sleep infinity
+          env:
+          - name: REDIS_HOST
+            value: "redis-service.llm-d-wide-ep.svc.cluster.local"
+          - name: REQUESTED_NICS
+            value: "net1"
+          - name: PRIMARY_IFNAME
+            value: "net1"
+          - name: SHARED_STORAGE_PATH
+            value: "/data"
+          - name: VLLM_MOE_DP_CHUNK_SIZE
+            value: "512" # vLLM default is 256
+          - name: TP_SIZE
+            value: "1"
+          - name: DP_SIZE_LOCAL
+            value: "8"
+          - name: TRITON_LIBCUDA_PATH
+            value: /usr/lib64
+          - name: VLLM_SKIP_P2P_CHECK
+            value: "1"
+          - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+            value: "1"
+          - name: VLLM_USE_DEEP_GEMM
+            value: "1"
+          - name: VLLM_ALL2ALL_BACKEND
+            value: deepep_low_latency
+          - name: NVIDIA_GDRCOPY
+            value: enabled
+          - name: NCCL_GDRCOPY_ENABLE
+            value: "1"
+              #- name: NVSHMEM_DISABLE_GDRCOPY
+              #value: "false"
+          - name: NVSHMEM_DEBUG_SUBSYS
+            value: "ALL"
+          - name: NVSHMEM_DEBUG
+            value: "TRACE" #TRACE
+              #- name: NVSHMEM_DEBUG_FILE
+              #  value: "/data/nvshmem-debug-$%h-%p.txt"
+          - name: NVSHMEM_LOG_LEVEL
+            value: "INFO"
+          - name: NVSHMEM_INFO
+            value: "true"
+          - name: NVSHMEM_REMOTE_TRANSPORT
+            value: "ibrc"
+          - name: NVSHMEM_IB_ENABLE_IBGDA
+            value: "1"
+          - name: NVSHMEM_IBGDA_SUPPORT
+            value: "1"
+          - name: NVSHMEM_USE_IBGDA
+            value: "1"
+          - name: NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME
+            value: "net1"
+          - name: NVSHMEM_IB_ADDR_RANGE
+            value: "0.0.0.0/0"
+          - name: NVSHMEM_HCA_LIST
+            value: "mlx5_7:1"
+          - name: NVSHMEM_ENABLE_NIC_PE_MAPPING
+            value: "1"
+          - name: NVSHMEM_IB_GID_INDEX
+            value: "3"
+          - name: UCX_SOCKADDR_TLS_PRIORITY
+            value: "tcp"
+          - name: UCX_TLS
+            value: "rc,sm,cuda_copy,cuda_ipc"
+          - name: UCX_PROTO_INFO
+            value: "y"
+          - name: UCX_IB_GID_INDEX
+            value: "3"
+              #- name: UCX_RC_MLX5_TM_ENABLE
+              #value: "n" 
+              #- name: UCX_UD_MLX5_RX_QUEUE_LEN
+              #value: "1024"
+          - name: GLOO_SOCKET_IFNAME
+            value: "net1"
+          - name: NCCL_SOCKET_IFNAME
+            value: "net1"
+          - name: NCCL_IB_HCA
+            value: "mlx5_7:1"
+          - name: VLLM_LOGGING_LEVEL
+            value: "INFO" #DEBUG
+            #- name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            #  value: "..."
+          - name: HF_HUB_CACHE
+            value: /huggingface-cache
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: llm-d-hf-token
+                key: HF_TOKEN
+          ports:
+          - containerPort: 5555
+            name: rpc
+            protocol: TCP
+          - containerPort: 8200
+            name: metrics
+            protocol: TCP
+              #readinessProbe:
+              #  httpGet:
+              #    path: /health
+              #    port: 8200
+          resources:
+            limits:
+              ephemeral-storage: 128Gi
+              nvidia.com/gpu: "8"
+              nvidia.com/roce: "8"
+            requests:
+              cpu: 32
+              ephemeral-storage: 128Gi
+              memory: 512Gi
+              nvidia.com/gpu: "8"
+              nvidia.com/roce: "8"
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - mountPath: /huggingface-cache
+              name: hf-cache
+            - name: hf-cache
+              mountPath: /data
+              subPath: debug-logs
+                #            - mountPath: /dev/gdrdrv
+                #              name: gdrdrv
+            - name: podinfo
+              mountPath: /etc/podnetinfo
+            - name: rdma-discovery-script
+              mountPath: /scripts
+              readOnly: true
+            - name: test-internode-script
+              mountPath: /test-script
+          workingDir: /code
+
