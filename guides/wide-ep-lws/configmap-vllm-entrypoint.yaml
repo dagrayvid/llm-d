@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vllm-entrypoint
+data:
+  vllm_entrypoint.sh: |
+    #!/bin/bash
+    ulimit -l unlimited
+    sleep 20
+
+    DISCOVERY_CMD="/scripts/discover.sh"
+    if [[ -n "$REQUESTED_NICS" ]]; then
+      DISCOVERY_CMD+=" -i $REQUESTED_NICS"
+    fi
+
+    $DISCOVERY_CMD
+    source /data/vllm_env_${HOSTNAME}.sh
+
+    KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${LOCAL_PRIMARY_IP}\"}"
+    START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+
+    env
+
+      #Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
+    vllm serve \
+      Qwen/Qwen3-Coder-30B-A3B-Instruct \
+      --port 8200 \
+      --trust-remote-code \
+      --disable-uvicorn-access-log \
+      --data-parallel-hybrid-lb \
+      --enable-expert-parallel \
+      --tensor-parallel-size $TP_SIZE \
+      --data-parallel-size $((LWS_GROUP_SIZE * DP_SIZE_LOCAL)) \
+      --data-parallel-size-local $DP_SIZE_LOCAL \
+      --data-parallel-address ${LWS_LEADER_ADDRESS} \
+      --data-parallel-rpc-port 5555 \
+      --data-parallel-start-rank $START_RANK \
+      --compilation_config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
+      --max-model-len 32000 \
+      --kv_transfer_config "${KV_CONFIG_JSON}"  || sleep infinity

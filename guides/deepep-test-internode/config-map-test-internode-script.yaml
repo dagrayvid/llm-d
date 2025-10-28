@@ -16,6 +16,6 @@ data:
     export RANK=${LWS_WORKER_INDEX}
     export MASTER_PORT=8361
     
-    python test_internode.py --test-ll-compatibility --num-processes 8 --num-experts 128
     
+    python test_low_latency.py --num-processes 8 --num-experts 128
 

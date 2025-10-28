@@ -45,10 +45,10 @@ spec:
           - name: hf-cache
             persistentVolumeClaim:
               claimName: model-pvc
-          - hostPath:
-              path: /run/nvidia/driver/dev/gdrdrv
-              type: CharDevice
-            name: gdrdrv
+                #          - hostPath:
+                #              path: /run/nvidia/driver/dev/gdrdrv
+                #              type: CharDevice
+                #            name: gdrdrv
           - name: podinfo
             downwardAPI:
               items:
@@ -59,16 +59,16 @@ spec:
             configMap:
               name: roce-hca-discovery-script
               defaultMode: 0755
+          - name: vllm-entrypoint
+            configMap:
+              name: vllm-entrypoint
+              defaultMode: 0755
+          - name: vllm-nixl-patch
+            configMap:
+              name: vllm-nixl-patch
         containers:
         - name: vllm-worker
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-297
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-230@sha256:744738e06eabc2dbf53b299d01572f149a25c752d31e7dd8bb828776c509076c
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-305@sha256:a5557be64a428817a66503bdbbc31709806aa41f45d2d64f0c4ada1bdd284814
-          image: ghcr.io/llm-d/llm-d-dev:pr-245@sha256:06ba310cd557b7762c391ac11fe0bf20307851769bcf42973608ddcc3b4b47cf
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-a4ce93a # remove transformers cache
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:sha-c29a23f # CUDA 12.9.1
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-229
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-291@sha256:8aae57dc3fe157fed864fd174951e2ecf2a0652315ff5729463bf1ffdc0dc796
+          image: ghcr.io/llm-d/llm-d-cuda:v0.3.0
           securityContext:
             #privileged: true
             runAsUser: 0
@@ -78,6 +78,7 @@ spec:
               - "IPC_LOCK"
               - "SYS_RAWIO"
               - "NET_RAW"
+              - "SYS_RESOURCE"
           imagePullPolicy: Always
           command:
             - /bin/bash
@@ -99,14 +100,18 @@ spec:
               $DISCOVERY_CMD
               source /data/vllm_env_${HOSTNAME}.sh
 
-              KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${LOCAL_PRIMARY_IP}\"}"
+              #KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${LOCAL_PRIMARY_IP}\",\"kv_connector_extra_config\":{\"num_threads\":4}}"
+              KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"num_threads\":4}}"
               START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
 
               env
 
-                #Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
+              dnf install -y patch
+              patch /opt/vllm-source/vllm/distributed/kv_transfer/kv_connector/v1/nixl_connector.py /vllm-patch/nixl_connector-patch.py
+              
+              #Qwen/Qwen3-Coder-30B-A3B-Instruct \
               vllm serve \
-                Qwen/Qwen3-Coder-30B-A3B-Instruct \
+                Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
                 --port 8200 \
                 --trust-remote-code \
                 --disable-uvicorn-access-log \
@@ -118,16 +123,18 @@ spec:
                 --data-parallel-address ${LWS_LEADER_ADDRESS} \
                 --data-parallel-rpc-port 5555 \
                 --data-parallel-start-rank $START_RANK \
+                --compilation_config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
                 --async-scheduling \
                 --enable-eplb \
-                --eplb-config '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"32","log_balancedness":"False"}' \
-                --compilation_config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
+                --eplb-config '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"16","log_balancedness":"False"}' \
                 --max-model-len 32000 \
+                --gpu-memory-utilization 0.84 \
                 --kv_transfer_config "${KV_CONFIG_JSON}"  || sleep infinity
+
+                sleep infinity
+
                 #--enable-dbo \
                 #--dbo-decode-token-threshold 32 \
-
-              sleep infinity
           env:
           - name: REDIS_HOST
             value: "redis-service.llm-d-wide-ep.svc.cluster.local"
@@ -153,6 +160,7 @@ spec:
             value: "1"
           - name: VLLM_ALL2ALL_BACKEND
             value: deepep_low_latency
+              #value: deepep_high_throughput
           - name: NVIDIA_GDRCOPY
             value: enabled
           - name: NCCL_GDRCOPY_ENABLE
@@ -187,18 +195,20 @@ spec:
             value: "1"
           - name: NVSHMEM_IB_GID_INDEX
             value: "3"
-            #- name: UCX_SOCKADDR_TLS_PRIORITY
-            #  value: "tcp"
-            #- name: UCX_TLS
-            #  value: "rc,sm,cuda_copy,cuda_ipc"
-            #- name: UCX_PROTO_INFO
-            #  value: "y"
-            #- name: UCX_IB_GID_INDEX
-            #  value: "3"
-            #- name: UCX_RC_MLX5_TM_ENABLE
-            #  value: "n" 
-            #- name: UCX_UD_MLX5_RX_QUEUE_LEN
-            #value: "1024"
+              #- name: UCX_SOCKADDR_TLS_PRIORITY
+              #  value: "tcp"
+              #- name: UCX_TLS
+              #  value: "all" #"rc,sm,cuda_copy,cuda_ipc"
+              #- name: UCX_NET_DEVICES
+              #  value: "all"
+              #- name: UCX_PROTO_INFO
+              #  value: "y"
+              #- name: UCX_IB_GID_INDEX
+              #  value: "3"
+              #- name: UCX_RC_MLX5_TM_ENABLE
+              #  value: "n" 
+              #- name: UCX_UD_MLX5_RX_QUEUE_LEN
+              #  value: "1024"
           - name: GLOO_SOCKET_IFNAME
             value: "net1"
           - name: NCCL_SOCKET_IFNAME
@@ -246,12 +256,17 @@ spec:
             - name: hf-cache
               mountPath: /data
               subPath: debug-logs
-            - mountPath: /dev/gdrdrv
-              name: gdrdrv
+                #            - mountPath: /dev/gdrdrv
+                #              name: gdrdrv
             - name: podinfo
               mountPath: /etc/podnetinfo
             - name: rdma-discovery-script
               mountPath: /scripts
               readOnly: true
+            - name: vllm-entrypoint
+              mountPath: /vllm-entrypoint
+              readOnly: true
+            - name: vllm-nixl-patch
+              mountPath: /vllm-patch
           workingDir: /code
 

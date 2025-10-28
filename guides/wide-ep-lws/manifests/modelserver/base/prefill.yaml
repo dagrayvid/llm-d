@@ -7,9 +7,9 @@ metadata:
     llm-d.ai/model: Qwen3-235B-A22B-Instruct-2507-FP8
     llm-d.ai/role: prefill
 spec:
-  replicas: 0
+  replicas: 1
   leaderWorkerTemplate:
-    size: 2
+    size: 1
     workerTemplate:
       metadata:
         labels:
@@ -38,12 +38,12 @@ spec:
                 - path: "annotations"
                   fieldRef:
                     fieldPath: metadata.annotations
+          - name: vllm-nixl-patch
+            configMap:
+              name: vllm-nixl-patch
         containers:
         - name: vllm-worker
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-274
-          image: ghcr.io/llm-d/llm-d-dev:pr-245@sha256:06ba310cd557b7762c391ac11fe0bf20307851769bcf42973608ddcc3b4b47cf
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-305@sha256:a5557be64a428817a66503bdbbc31709806aa41f45d2d64f0c4ada1bdd284814
-          #image: ghcr.io/llm-d/llm-d-cuda-dev:pr-291@sha256:8aae57dc3fe157fed864fd174951e2ecf2a0652315ff5729463bf1ffdc0dc796
+          image: ghcr.io/llm-d/llm-d-cuda:v0.3.0
           securityContext:
             runAsUser: 0
             runAsGroup: 0
@@ -71,14 +71,15 @@ spec:
               $DISCOVERY_CMD
               source /data/vllm_env_${HOSTNAME}.sh
 
-              KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${LOCAL_PRIMARY_IP}\"}"
+              #KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_ip\":\"${FINAL_LEADER_IP}\",\"kv_connector_extra_config\":{\"num_threads\":4}}"
+              KV_CONFIG_JSON="{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"num_threads\":4}}"
               START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
             
               source /opt/vllm/bin/activate
-              
-              # Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
-              exec vllm serve \
-                Qwen/Qwen3-Coder-30B-A3B-Instruct \
+
+              patch /opt/vllm-source/vllm/distributed/kv_transfer/kv_connector/v1/nixl_connector.py /vllm-patch/nixl_connector-patch.py
+              vllm serve \
+                Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 \
                 --port 8000 \
                 --trust-remote-code \
                 --disable-uvicorn-access-log \
@@ -90,12 +91,14 @@ spec:
                 --data-parallel-address ${LWS_LEADER_ADDRESS} \
                 --data-parallel-rpc-port 5555 \
                 --data-parallel-start-rank $START_RANK \
-                --gpu-memory-utilization 0.75
+                --gpu-memory-utilization 0.75 \
                 --async-scheduling \
+                --eplb-config '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"16","log_balancedness":"True"}' \
                 --enable-eplb \
-                --eplb-config '{"window_size":"1000","step_interval":"3000","num_redundant_experts":"32","log_balancedness":"False"}' \
+                --kv_transfer_config "${KV_CONFIG_JSON}" \
                 --max-model-len 32000
-                #--kv_transfer_config "${KV_CONFIG_JSON}" \
+
+                sleep infinity
                 #--enable-dbo \
                 #--dbo-prefill-token-threshold 32 \
           env:
@@ -147,7 +150,7 @@ spec:
           - name: NVSHMEM_HCA_LIST
             value: "mlx5_7:1"
           - name: NVSHMEM_ENABLE_NIC_PE_MAPPING
-            value:  "1"
+            value: "1"
           - name: NVSHMEM_IB_GID_INDEX
             value: "3"
           - name: NVSHMEM_USE_IBGDA
@@ -205,4 +208,6 @@ spec:
             - name: rdma-discovery-script
               mountPath: /scripts
               readOnly: true
+            - name: vllm-nixl-patch
+              mountPath: /vllm-patch
 
